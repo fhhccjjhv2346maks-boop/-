@@ -1,0 +1,291 @@
+-- ⚡ NEXUS x WINDUI | Fixed Sliders | No Pink Button ⚡
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- Загрузка библиотеки WindUI
+local success, WindUI = pcall(function()
+    return loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+end)
+
+if not success then
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "Ошибка", Text = "Не удалось загрузить WindUI. Проверь HttpGet!", Duration = 5
+    })
+    return
+end
+
+-- Настройки (Стартовые значения жестко заданы, чтобы ползунки не показывали 0)
+local Config = {
+    SilentEnabled = true, 
+    SilentFOV = 150, 
+    SilentMaxDist = 500, 
+    TeamCheck = true,
+    ESP_Box = true, 
+    ESP_Health = true, 
+    ESP_Dist = true, 
+    ESP_Skeleton = true
+}
+
+local Target, TargetPart = nil, nil
+local ESP_Objects = {}
+
+-- ================= КРУЖОК FOV =================
+local FovCircle = Drawing.new("Circle")
+FovCircle.Thickness = 1.5
+FovCircle.NumSides = 40
+FovCircle.Filled = false
+FovCircle.Color = Color3.fromRGB(255, 50, 100)
+FovCircle.Visible = true
+FovCircle.Radius = Config.SilentFOV -- Сразу ставим правильный радиус
+
+-- ================= ЛОГИКА =================
+local function IsVisible(part)
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character, part.Parent}
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    local result = workspace:Raycast(Camera.CFrame.Position, (part.Position - Camera.CFrame.Position), rayParams)
+    return result == nil or result.Instance:IsDescendantOf(part.Parent)
+end
+
+local function GetTarget()
+    local closest, shortestDist = nil, math.huge
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local hum = player.Character:FindFirstChild("Humanoid")
+            local part = player.Character:FindFirstChild("Head")
+            local isTeammate = Config.TeamCheck and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team
+
+            if hum and hum.Health > 0 and part and not isTeammate then
+                local dist3D = (part.Position - Camera.CFrame.Position).Magnitude
+                if dist3D <= Config.SilentMaxDist then
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
+                    if onScreen and IsVisible(part) then
+                        local dist2D = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+                        if dist2D < shortestDist and dist2D <= Config.SilentFOV then
+                            closest, TargetPart = player, part
+                            shortestDist = dist2D
+                        end
+                    end
+                end
+            end
+        end
+    end
+    Target = closest
+end
+
+-- ================= ХУК SILENT AIM =================
+pcall(function()
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
+        if Config.SilentEnabled and Target and TargetPart then
+            if method == "Raycast" and self == workspace then
+                local origin, direction = args[1], args[2]
+                if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
+                    args[2] = (TargetPart.Position - origin).Unit * direction.Magnitude
+                end
+            elseif method == "FindPartOnRay" then
+                local ray = args[1]
+                if typeof(ray) == "Ray" then
+                    args[1] = Ray.new(ray.Origin, (TargetPart.Position - ray.Origin).Unit * 1000)
+                end
+            end
+        end
+        return oldNamecall(self, unpack(args))
+    end)
+end)
+
+-- ================= ESP =================
+local function UpdateESP()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            pcall(function()
+                if not ESP_Objects[player] then
+                    local obj = {Box = {}, Skeleton = {}}
+                    for i=1,4 do
+                        local l = Drawing.new("Line"); l.Thickness = 1; l.Color = Color3.fromRGB(0, 255, 200); l.Visible = false; table.insert(obj.Box, l)
+                    end
+                    obj.Health = Drawing.new("Line"); obj.Health.Thickness = 2; obj.Health.Visible = false
+                    obj.Text = Drawing.new("Text"); obj.Text.Size = 14; obj.Text.Center = true; obj.Text.Outline = true; obj.Text.Color = Color3.fromRGB(255, 255, 255); obj.Text.Visible = false
+                    for i=1,6 do
+                        local l = Drawing.new("Line"); l.Thickness = 1; l.Color = Color3.fromRGB(255, 255, 255); l.Visible = false; table.insert(obj.Skeleton, l)
+                    end
+                    ESP_Objects[player] = obj
+                end
+                
+                local obj = ESP_Objects[player]
+                local char = player.Character
+                local hum = char and char:FindFirstChild("Humanoid")
+                local isTeammate = Config.TeamCheck and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team
+
+                if not char or not hum or hum.Health <= 0 or isTeammate then
+                    for _, l in pairs(obj.Box) do l.Visible = false end
+                    obj.Health.Visible = false; obj.Text.Visible = false
+                    for _, l in pairs(obj.Skeleton) do l.Visible = false end
+                    return
+                end
+
+                local head, root = char:FindFirstChild("Head"), char:FindFirstChild("HumanoidRootPart")
+                if head and root then
+                    local headPos, onScreen = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+                    local rootPos = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3, 0))
+                    
+                    if onScreen and rootPos.Z > 0 then
+                        local h = math.abs(headPos.Y - rootPos.Y)
+                        local w = h / 2
+                        local x, y = headPos.X - w/2, headPos.Y
+                        
+                        if Config.ESP_Box then
+                            obj.Box[1].From = Vector2.new(x, y); obj.Box[1].To = Vector2.new(x+w, y)
+                            obj.Box[2].From = Vector2.new(x+w, y); obj.Box[2].To = Vector2.new(x+w, y+h)
+                            obj.Box[3].From = Vector2.new(x+w, y+h); obj.Box[3].To = Vector2.new(x, y+h)
+                            obj.Box[4].From = Vector2.new(x, y+h); obj.Box[4].To = Vector2.new(x, y)
+                            for _, l in pairs(obj.Box) do l.Visible = true end
+                        else for _, l in pairs(obj.Box) do l.Visible = false end end
+
+                        if Config.ESP_Health then
+                            obj.Health.From = Vector2.new(x - 5, y); obj.Health.To = Vector2.new(x - 5, y + (h * (hum.Health / hum.MaxHealth)))
+                            obj.Health.Color = Color3.fromHSV((hum.Health / hum.MaxHealth) * 0.3, 1, 1); obj.Health.Visible = true
+                        else obj.Health.Visible = false end
+
+                        if Config.ESP_Dist then
+                            obj.Text.Text = "[" .. math.floor((root.Position - Camera.CFrame.Position).Magnitude) .. "m]"
+                            obj.Text.Position = Vector2.new(headPos.X, y - 18); obj.Text.Visible = true
+                        else obj.Text.Visible = false end
+
+                        if Config.ESP_Skeleton then
+                            local function drawBone(p1, p2, idx)
+                                if p1 and p2 then
+                                    local v1, v2 = Camera:WorldToViewportPoint(p1.Position), Camera:WorldToViewportPoint(p2.Position)
+                                    if v1.Z > 0 and v2.Z > 0 then
+                                        obj.Skeleton[idx].From = Vector2.new(v1.X, v1.Y); obj.Skeleton[idx].To = Vector2.new(v2.X, v2.Y)
+                                        obj.Skeleton[idx].Visible = true
+                                    else obj.Skeleton[idx].Visible = false end
+                                else obj.Skeleton[idx].Visible = false end
+                            end
+                            local upper = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+                            local lower = char:FindFirstChild("LowerTorso") or char:FindFirstChild("Torso")
+                            drawBone(head, upper, 1); drawBone(upper, lower, 2)
+                            drawBone(upper, char:FindFirstChild("LeftUpperArm") or char:FindFirstChild("Left Arm"), 3)
+                            drawBone(upper, char:FindFirstChild("RightUpperArm") or char:FindFirstChild("Right Arm"), 4)
+                            drawBone(lower, char:FindFirstChild("LeftUpperLeg") or char:FindFirstChild("Left Leg"), 5)
+                            drawBone(lower, char:FindFirstChild("RightUpperLeg") or char:FindFirstChild("Right Leg"), 6)
+                        else for _, l in pairs(obj.Skeleton) do l.Visible = false end end
+                    else
+                        for _, l in pairs(obj.Box) do l.Visible = false end
+                        obj.Health.Visible = false; obj.Text.Visible = false
+                        for _, l in pairs(obj.Skeleton) do l.Visible = false end
+                    end
+                end
+            end)
+        end
+    end
+end
+
+-- ================= МЕНЮ WINDUI =================
+-- Встроенная кнопка открытия появится автоматически
+local Window = WindUI:CreateWindow({
+    Title = "NEXUS HUB",
+    Icon = "shield",
+    Author = "by WindUI",
+    Folder = "Nexus",
+    Size = UDim2.fromOffset(500, 350),
+    Transparent = true,
+    Theme = "Dark",
+    SideBarWidth = 180,
+    HasOutline = true,
+})
+
+-- Вкладка Combat
+local CombatTab = Window:Tab({ Title = "Combat", Icon = "crosshair" })
+
+CombatTab:Toggle({
+    Title = "Silent Aim",
+    Default = Config.SilentEnabled,
+    Callback = function(Value) Config.SilentEnabled = Value end
+})
+
+-- ИСПРАВЛЕННЫЕ СЛАЙДЕРЫ
+CombatTab:Slider({
+    Title = "FOV Радиус",
+    Step = 1,
+    Default = Config.SilentFOV,
+    Min = 50,
+    Max = 400,
+    Callback = function(Value) 
+        Config.SilentFOV = Value 
+        FovCircle.Radius = Value -- Мгновенно применяем
+    end
+})
+
+CombatTab:Slider({
+    Title = "Макс. Дистанция",
+    Step = 10,
+    Default = Config.SilentMaxDist,
+    Min = 50,
+    Max = 1000,
+    Callback = function(Value) 
+        Config.SilentMaxDist = Value 
+    end
+})
+
+CombatTab:Toggle({
+    Title = "Team Check (Только враги)",
+    Default = Config.TeamCheck,
+    Callback = function(Value) Config.TeamCheck = Value end
+})
+
+-- Вкладка Visuals
+local VisualTab = Window:Tab({ Title = "Visuals", Icon = "eye" })
+
+VisualTab:Toggle({
+    Title = "2D Boxes",
+    Default = Config.ESP_Box,
+    Callback = function(Value) Config.ESP_Box = Value end
+})
+
+VisualTab:Toggle({
+    Title = "Health Bar",
+    Default = Config.ESP_Health,
+    Callback = function(Value) Config.ESP_Health = Value end
+})
+
+VisualTab:Toggle({
+    Title = "Distance",
+    Default = Config.ESP_Dist,
+    Callback = function(Value) Config.ESP_Dist = Value end
+})
+
+VisualTab:Toggle({
+    Title = "Skeleton",
+    Default = Config.ESP_Skeleton,
+    Callback = function(Value) Config.ESP_Skeleton = Value end
+})
+
+-- ================= ГЛАВНЫЙ ЦИКЛ =================
+RunService.RenderStepped:Connect(function()
+    local screenSize = Camera.ViewportSize
+    FovCircle.Position = Vector2.new(screenSize.X / 2, screenSize.Y / 2)
+    FovCircle.Visible = Config.SilentEnabled
+
+    if Config.SilentEnabled then GetTarget() else Target = nil end
+    UpdateESP()
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if ESP_Objects[player] then
+        for _, obj in pairs(ESP_Objects[player]) do
+            if typeof(obj) == "table" then
+                for _, line in pairs(obj) do if line.Remove then line:Remove() end end
+            elseif obj.Remove then
+                obj:Remove()
+            end
+        end
+        ESP_Objects[player] = nil
+    end
+end)
