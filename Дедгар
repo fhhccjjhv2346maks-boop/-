@@ -1,0 +1,282 @@
+-- ⚡ NEXUS DEGRADE | Streaming Bypass + 1500m ESP + HitPart Selector ⚡
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- Загрузка библиотеки Fluent
+local success, Fluent = pcall(function()
+    return loadstring(game:HttpGetAsync("https://github.com/ActualMasterOogway/Fluent-Renewed/releases/latest/download/Fluent.luau"))()
+end)
+
+if not success then
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "Ошибка", Text = "Не удалось загрузить меню. Включи HttpGet!", Duration = 5
+    })
+    return
+end
+
+-- ЖЕСТКИЙ ЛИМИТ ДИСТАНЦИИ (1500 studs)
+local MAX_DISTANCE = 1500 
+
+local Config = {
+    SilentEnabled = false, 
+    AimbotEnabled = false, 
+    AimSmoothness = 0.3,
+    SilentFOV = 150, 
+    FovColor = Color3.fromRGB(255, 50, 100), 
+    TeamCheck = true,
+    HitPart = "Head",
+    
+    ESP_Box = false, 
+    ESP_Health = false, 
+    ESP_Dist = false, 
+    ESP_Skeleton = false, 
+    ESP_Name = false,
+    
+    BoxColor = Color3.fromRGB(0, 255, 200),
+    SkeletonColor = Color3.fromRGB(255, 255, 255)
+}
+
+local Target, TargetPart = nil, nil
+local ESP_Objects = {}
+
+-- ================= КРУЖОК FOV =================
+local FovCircle = Drawing.new("Circle")
+FovCircle.Thickness = 1.5
+FovCircle.NumSides = 40
+FovCircle.Filled = false
+FovCircle.Color = Config.FovColor
+FovCircle.Radius = Config.SilentFOV
+FovCircle.Visible = false
+
+-- ================= ХЕЛПЕР ДЛЯ ВЫБОРА ЧАСТИ ТЕЛА =================
+local function GetBodyPart(character)
+    if not character then return nil end
+    if Config.HitPart == "Head" then
+        return character:FindFirstChild("Head")
+    elseif Config.HitPart == "Torso" then
+        return character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+    elseif Config.HitPart == "Legs" then
+        return character:FindFirstChild("LeftUpperLeg") or character:FindFirstChild("Left Leg") or character:FindFirstChild("LowerTorso")
+    end
+    return character:FindFirstChild("Head")
+end
+
+-- ================= ЛОГИКА ЦЕЛИ (БЕЗ ОШИБОК ПРИ СТРИМИНГЕ) =================
+local function IsVisible(part)
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character, part.Parent}
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    local result = workspace:Raycast(Camera.CFrame.Position, (part.Position - Camera.CFrame.Position), rayParams)
+    return result == nil or result.Instance:IsDescendantOf(part.Parent)
+end
+
+local function GetTarget()
+    local closest, shortestDist = nil, math.huge
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local hum = player.Character:FindFirstChild("Humanoid")
+            local part = GetBodyPart(player.Character)
+            local isTeammate = Config.TeamCheck and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team
+
+            -- Если части нет (стриминг), пробуем использовать HRP для наведения
+            if not part then
+                part = player.Character:FindFirstChild("HumanoidRootPart")
+            end
+
+            if hum and hum.Health > 0 and part and not isTeammate then
+                local dist3D = (part.Position - Camera.CFrame.Position).Magnitude
+                if dist3D <= MAX_DISTANCE then
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
+                    if onScreen and IsVisible(part) then
+                        local dist2D = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+                        if dist2D < shortestDist and dist2D <= Config.SilentFOV then
+                            closest, TargetPart = player, part
+                            shortestDist = dist2D
+                        end
+                    end
+                end
+            end
+        end
+    end
+    Target = closest
+end
+
+-- ================= ХУК SILENT AIM =================
+pcall(function()
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
+        if Config.SilentEnabled and Target and TargetPart then
+            if method == "Raycast" and self == workspace then
+                local origin, direction = args[1], args[2]
+                if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
+                    args[2] = (TargetPart.Position - origin).Unit * direction.Magnitude
+                end
+            elseif method == "FindPartOnRay" then
+                local ray = args[1]
+                if typeof(ray) == "Ray" then
+                    args[1] = Ray.new(ray.Origin, (TargetPart.Position - ray.Origin).Unit * 1000)
+                end
+            end
+        end
+        return oldNamecall(self, unpack(args))
+    end)
+end)
+
+-- ================= ОТРИСОВКА ESP (ОБХОД СТРИМИНГА) =================
+local function UpdateESP()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            pcall(function()
+                if not ESP_Objects[player] then
+                    local obj = {Box = {}, Skeleton = {}}
+                    for i=1,4 do
+                        local l = Drawing.new("Line"); l.Thickness = 1; l.Color = Config.BoxColor; l.Visible = false; table.insert(obj.Box, l)
+                    end
+                    obj.Health = Drawing.new("Line"); obj.Health.Thickness = 2; obj.Health.Visible = false
+                    obj.Text = Drawing.new("Text"); obj.Text.Size = 14; obj.Text.Center = true; obj.Text.Outline = true; obj.Text.Color = Color3.fromRGB(255, 255, 255); obj.Text.Visible = false
+                    for i=1,6 do
+                        local l = Drawing.new("Line"); l.Thickness = 1; l.Color = Config.SkeletonColor; l.Visible = false; table.insert(obj.Skeleton, l)
+                    end
+                    ESP_Objects[player] = obj
+                end
+                
+                local obj = ESP_Objects[player]
+                local char = player.Character
+                local hum = char and char:FindFirstChild("Humanoid")
+                local root = char and char:FindFirstChild("HumanoidRootPart")
+                local isTeammate = Config.TeamCheck and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team
+
+                -- Проверяем только HRP и Hum. Если их нет — пропускаем
+                if not char or not hum or hum.Health <= 0 or isTeammate or not root or (root.Position - Camera.CFrame.Position).Magnitude > MAX_DISTANCE then
+                    for _, l in pairs(obj.Box) do l.Visible = false end
+                    obj.Health.Visible = false; obj.Text.Visible = false
+                    for _, l in pairs(obj.Skeleton) do l.Visible = false end
+                    return
+                end
+
+                -- Ищем голову для отрисовки, но если нет — используем HRP как точку
+                local head = char:FindFirstChild("Head")
+                local headPos, onScreen = Camera:WorldToViewportPoint((head and head.Position or root.Position) + Vector3.new(0, 0.5, 0))
+                local rootPos = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3, 0))
+                
+                if onScreen and rootPos.Z > 0 then
+                    local h = math.abs(headPos.Y - rootPos.Y)
+                    local w = h / 2
+                    local x, y = headPos.X - w/2, headPos.Y
+                    
+                    -- 2D Box (рисуется всегда, даже если Head нет)
+                    if Config.ESP_Box then
+                        obj.Box[1].From = Vector2.new(x, y); obj.Box[1].To = Vector2.new(x+w, y)
+                        obj.Box[2].From = Vector2.new(x+w, y); obj.Box[2].To = Vector2.new(x+w, y+h)
+                        obj.Box[3].From = Vector2.new(x+w, y+h); obj.Box[3].To = Vector2.new(x, y+h)
+                        obj.Box[4].From = Vector2.new(x, y+h); obj.Box[4].To = Vector2.new(x, y)
+                        for _, l in pairs(obj.Box) do l.Visible = true end
+                    else for _, l in pairs(obj.Box) do l.Visible = false end end
+
+                    -- Health Bar
+                    if Config.ESP_Health and head then
+                        obj.Health.From = Vector2.new(x - 5, y); obj.Health.To = Vector2.new(x - 5, y + (h * (hum.Health / hum.MaxHealth)))
+                        obj.Health.Color = Color3.fromHSV((hum.Health / hum.MaxHealth) * 0.3, 1, 1); obj.Health.Visible = true
+                    else obj.Health.Visible = false end
+
+                    -- Name & Dist
+                    if Config.ESP_Name or Config.ESP_Dist then
+                        local txt = ""
+                        if Config.ESP_Name then txt = player.Name .. "\n" end
+                        if Config.ESP_Dist then txt = txt .. "[" .. math.floor((root.Position - Camera.CFrame.Position).Magnitude) .. "m]" end
+                        obj.Text.Text = txt; obj.Text.Position = Vector2.new(headPos.X, y - 30); obj.Text.Visible = true
+                    else obj.Text.Visible = false end
+
+                    -- Skeleton (только если есть части)
+                    if Config.ESP_Skeleton and head then
+                        local function drawBone(p1, p2, idx)
+                            if p1 and p2 then
+                                local v1, v2 = Camera:WorldToViewportPoint(p1.Position), Camera:WorldToViewportPoint(p2.Position)
+                                if v1.Z > 0 and v2.Z > 0 then
+                                    obj.Skeleton[idx].From = Vector2.new(v1.X, v1.Y); obj.Skeleton[idx].To = Vector2.new(v2.X, v2.Y); obj.Skeleton[idx].Visible = true
+                                else obj.Skeleton[idx].Visible = false end
+                            else obj.Skeleton[idx].Visible = false end
+                        end
+                        local upper = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+                        local lower = char:FindFirstChild("LowerTorso") or char:FindFirstChild("Torso")
+                        drawBone(head, upper, 1); drawBone(upper, lower, 2)
+                        drawBone(upper, char:FindFirstChild("LeftUpperArm") or char:FindFirstChild("Left Arm"), 3)
+                        drawBone(upper, char:FindFirstChild("RightUpperArm") or char:FindFirstChild("Right Arm"), 4)
+                        drawBone(lower, char:FindFirstChild("LeftUpperLeg") or char:FindFirstChild("Left Leg"), 5)
+                        drawBone(lower, char:FindFirstChild("RightUpperLeg") or char:FindFirstChild("Right Leg"), 6)
+                    else
+                        for _, l in pairs(obj.Skeleton) do l.Visible = false end
+                    end
+                else
+                    for _, l in pairs(obj.Box) do l.Visible = false end
+                    obj.Health.Visible = false; obj.Text.Visible = false
+                    for _, l in pairs(obj.Skeleton) do l.Visible = false end
+                end
+            end)
+        end
+    end
+end
+
+-- ================= МЕНЮ FLUENT =================
+local Window = Fluent:CreateWindow({
+    Title = "NEXUS DEGRADE",
+    SubTitle = "Streaming Bypass",
+    TabWidth = 110, 
+    Size = UDim2.fromOffset(360, 260),
+    Acrylic = false,
+    Theme = "Dark"
+})
+
+local CombatTab = Window:AddTab({ Title = "Combat", Icon = "crosshair" })
+CombatTab:AddToggle("SilentAim", { Title = "Silent Aim", Default = false, Callback = function(v) Config.SilentEnabled = v end })
+CombatTab:AddToggle("Aimbot", { Title = "Aimbot", Default = false, Callback = function(v) Config.AimbotEnabled = v end })
+CombatTab:AddDropdown("HitPart", { Title = "Куда целиться", Values = {"Head", "Torso", "Legs"}, Default = "Head", Callback = function(v) Config.HitPart = v end })
+CombatTab:AddSlider("Smoothness", { Title = "Плавность", Default = 0.3, Min = 0.1, Max = 1, Rounding = 2, Callback = function(v) Config.AimSmoothness = v end })
+CombatTab:AddSlider("FOVSize", { Title = "FOV", Default = 150, Min = 50, Max = 400, Rounding = 0, Callback = function(v) Config.SilentFOV = v; FovCircle.Radius = v end })
+CombatTab:AddColorpicker("FOVColor", { Title = "Цвет FOV", Default = Config.FovColor, Callback = function(v) Config.FovColor = v; FovCircle.Color = v end })
+CombatTab:AddToggle("TeamCheck", { Title = "Только враги", Default = true, Callback = function(v) Config.TeamCheck = v end })
+
+local VisualTab = Window:AddTab({ Title = "Visuals", Icon = "eye" })
+VisualTab:AddToggle("ESP_Box", { Title = "2D Boxes", Default = false, Callback = function(v) Config.ESP_Box = v end })
+VisualTab:AddColorpicker("BoxColor", { Title = "Цвет Боксов", Default = Config.BoxColor, Callback = function(v) Config.BoxColor = v; for _, obj in pairs(ESP_Objects) do for _, l in pairs(obj.Box) do l.Color = v end end end })
+VisualTab:AddToggle("ESP_Health", { Title = "Health", Default = false, Callback = function(v) Config.ESP_Health = v end })
+VisualTab:AddToggle("ESP_Dist", { Title = "Distance", Default = false, Callback = function(v) Config.ESP_Dist = v end })
+VisualTab:AddToggle("ESP_Name", { Title = "Name", Default = false, Callback = function(v) Config.ESP_Name = v end })
+VisualTab:AddToggle("ESP_Skeleton", { Title = "Skeleton", Default = false, Callback = function(v) Config.ESP_Skeleton = v end })
+VisualTab:AddColorpicker("SkeletonColor", { Title = "Цвет Скелета", Default = Config.SkeletonColor, Callback = function(v) Config.SkeletonColor = v; for _, obj in pairs(ESP_Objects) do for _, l in pairs(obj.Skeleton) do l.Color = v end end end })
+
+Window:SelectTab(1)
+
+-- ================= ГЛАВНЫЙ ЦИКЛ =================
+RunService.RenderStepped:Connect(function()
+    FovCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    FovCircle.Visible = Config.SilentEnabled or Config.AimbotEnabled
+
+    if Config.SilentEnabled or Config.AimbotEnabled then GetTarget() else Target = nil end
+    
+    if Config.AimbotEnabled and Target and TargetPart then
+        local targetCFrame = CFrame.lookAt(Camera.CFrame.Position, TargetPart.Position)
+        Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, Config.AimSmoothness)
+    end
+
+    UpdateESP()
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if ESP_Objects[player] then
+        for _, obj in pairs(ESP_Objects[player]) do
+            if typeof(obj) == "table" then
+                for _, line in pairs(obj) do if line.Remove then line:Remove() end end
+            elseif obj.Remove then
+                obj:Remove()
+            end
+        end
+        ESP_Objects[player] = nil
+    end
+end)
